@@ -1,6 +1,5 @@
 ﻿using Bot.Services;
 using Bot.Settings;
-using FFmpeg.NET;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
@@ -25,7 +24,6 @@ namespace Bot
 
             services
                 .AddSingleton<ITelegramBotClient>(new TelegramBotClient(settings.Telegram.Token))
-                .AddSingleton(new Engine(settings.FFMpeg.Path))
                 .AddSingleton(settings)
                 .AddTransient<IMessageService, MessageService>();
 

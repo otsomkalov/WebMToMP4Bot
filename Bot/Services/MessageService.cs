@@ -1,12 +1,13 @@
 ﻿using System;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using FFmpeg.NET;
 using Microsoft.Extensions.Logging;
 using Telegram.Bot;
 using Telegram.Bot.Types;
+using Xabe.FFmpeg;
 using File = System.IO.File;
 using Message = Telegram.Bot.Types.Message;
 
@@ -21,14 +22,12 @@ namespace Bot.Services
     {
         private readonly ITelegramBotClient _bot;
         private readonly ILogger _logger;
-        private readonly Engine _engine;
         private static readonly Regex WebmRegex = new Regex("https?[^ ]*.webm");
 
-        public MessageService(ITelegramBotClient bot, ILogger<MessageService> logger, Engine engine)
+        public MessageService(ITelegramBotClient bot, ILogger<MessageService> logger)
         {
             _bot = bot;
             _logger = logger;
-            _engine = engine;
         }
 
         public async void HandleAsync(Message message)
@@ -96,7 +95,7 @@ namespace Bot.Services
 
         private async Task HandleLinkAsync(Message receivedMessage, string link)
         {
-            var inputFileName = $"{Path.GetTempPath()}{Guid.NewGuid()}.webm";
+            var inputFileName = Path.ChangeExtension(Path.GetTempFileName(), ".webm");
 
             var sentMessage = await _bot.SendTextMessageAsync(
                 new ChatId(receivedMessage.Chat.Id),
@@ -151,7 +150,7 @@ namespace Bot.Services
 
         private async Task HandleDocumentAsync(Message receivedMessage)
         {
-            var inputFileName = $"{Path.GetTempPath()}{Guid.NewGuid()}.webm";
+            var inputFileName = Path.ChangeExtension(Path.GetTempFileName(), ".webm");
 
             var sentMessage = await _bot.SendTextMessageAsync(
                 new ChatId(receivedMessage.Chat.Id), 
@@ -167,22 +166,45 @@ namespace Bot.Services
             await ProcessFileAsync(receivedMessage, sentMessage, inputFileName, receivedMessage.Document.FileName);
         }
 
-        private async Task ProcessFileAsync(Message receivedMessage, Message sentMessage, string inputFileName,
+        private async Task ProcessFileAsync(Message receivedMessage, Message sentMessage, string inputFilePath,
             string link)
         {
             await _bot.EditMessageTextAsync(
                 new ChatId(sentMessage.Chat.Id),
                 sentMessage.MessageId,
                 $"{link}\nConversion in progress 🚀");
-            
-            var inputFile = new MediaFile(inputFileName);
 
-            MediaFile outputFile;
+            var mediaInfo = await FFmpeg.GetMediaInfo(inputFilePath);
+
+            var videoStream = mediaInfo.VideoStreams.FirstOrDefault();
+
+            if (videoStream == null)
+            {
+                await _bot.EditMessageTextAsync(
+                    new ChatId(sentMessage.Chat.Id),
+                    sentMessage.MessageId,
+                    $"{link}\nVideo doesn't have video stream in it");
+                
+                return;
+            }
+            
+            var width = videoStream.Width % 2 == 0 ? videoStream.Width : videoStream.Width - 1;
+            var height = videoStream.Height % 2 == 0 ? videoStream.Height : videoStream.Height - 1;
+
+            videoStream = videoStream
+                .SetCodec(VideoCodec.h264)
+                .SetSize(width, height);
+
+            var audioStream = mediaInfo.AudioStreams.FirstOrDefault()?.SetCodec(AudioCodec.aac);
+
+            var outputFilePath = Path.ChangeExtension(Path.GetTempFileName(), ".mp4");
             
             try
             {
-                outputFile = await _engine.ConvertAsync(inputFile,
-                    new MediaFile($"{Path.GetTempPath()}{Guid.NewGuid().ToString()}.mp4"));
+                await FFmpeg.Conversions.New()
+                    .AddStream<IStream>(videoStream, audioStream)
+                    .SetOutput(outputFilePath)
+                    .Start();
             }
             catch (Exception)
             {
@@ -191,7 +213,7 @@ namespace Bot.Services
                     sentMessage.MessageId,
                     $"{link}\nError during file conversion");
                 
-                CleanupFiles(inputFile);
+                CleanupFiles(inputFilePath);
 
                 throw;
             }
@@ -201,14 +223,12 @@ namespace Bot.Services
                 sentMessage.MessageId,
                 $"{link}\nGenerating thumbnail 🖼️");
 
-            MediaFile thumbnail;
-            
+            var thumbnailFilePath = Path.ChangeExtension(Path.GetTempFileName(), ".jpg");
+            var thumbnailConversion = await FFmpeg.Conversions.FromSnippet.Snapshot(inputFilePath, thumbnailFilePath, TimeSpan.Zero);
+
             try
             {
-                thumbnail = await _engine.GetThumbnailAsync(
-                    outputFile,
-                    new MediaFile($"{Path.GetTempPath()}{Guid.NewGuid()}.jpg"),
-                    new ConversionOptions {Seek = TimeSpan.Zero});
+                await thumbnailConversion.Start();
             }
             catch (Exception)
             {
@@ -217,7 +237,7 @@ namespace Bot.Services
                     sentMessage.MessageId,
                     $"{link}\nError during file conversion");
                 
-                CleanupFiles(inputFile, outputFile);
+                CleanupFiles(inputFilePath, outputFilePath);
 
                 throw;
             }
@@ -229,8 +249,8 @@ namespace Bot.Services
 
             try
             {
-                await using var videoStream = File.OpenRead(outputFile.FileInfo.FullName);
-                await using var imageStream = File.OpenRead(thumbnail.FileInfo.FullName);
+                await using var outputStream = File.OpenRead(outputFilePath);
+                await using var thumbnailStream = File.OpenRead(thumbnailFilePath);
 
                 await _bot.DeleteMessageAsync(
                     new ChatId(sentMessage.Chat.Id),
@@ -239,9 +259,9 @@ namespace Bot.Services
 
                 await _bot.SendVideoAsync(
                     new ChatId(sentMessage.Chat.Id),
-                    new InputMedia(videoStream, outputFile.FileInfo.Name),
+                    new InputMedia(outputStream, outputFilePath),
                     replyToMessageId: receivedMessage.MessageId,
-                    thumb: new InputMedia(imageStream, thumbnail.FileInfo.Name),
+                    thumb: new InputMedia(thumbnailStream, thumbnailFilePath),
                     caption: link,
                     disableNotification: true);
             }
@@ -252,29 +272,29 @@ namespace Bot.Services
                     sentMessage.MessageId,
                     $"{link}\nError during file upload");
                     
-                CleanupFiles(inputFile, outputFile, thumbnail);
+                CleanupFiles(inputFilePath, outputFilePath, thumbnailFilePath);
 
                 throw;
             }
 
-            CleanupFiles(inputFile, outputFile, thumbnail);
+            CleanupFiles(inputFilePath, outputFilePath, thumbnailFilePath);
         }
 
-        private static void CleanupFiles(MediaFile inputFile = null, MediaFile outputFile = null, MediaFile thumbnail = null)
+        private static void CleanupFiles(string inputFilePath = null, string outputFile = null, string thumbnail = null)
         {
-            if (inputFile?.FileInfo?.FullName != null)
+            if (inputFilePath != null)
             {
-                File.Delete(inputFile.FileInfo.FullName);
+                File.Delete(inputFilePath);
             }
             
-            if (outputFile?.FileInfo?.FullName != null)
+            if (outputFile != null)
             {
-                File.Delete(outputFile.FileInfo.FullName);
+                File.Delete(outputFile);
             }
             
-            if (thumbnail?.FileInfo?.FullName != null)
+            if (thumbnail != null)
             {
-                File.Delete(thumbnail.FileInfo.FullName);
+                File.Delete(thumbnail);
             }
         }
     }
