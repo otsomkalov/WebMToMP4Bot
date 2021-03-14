@@ -95,7 +95,7 @@ namespace Bot.Services
 
         private async Task HandleLinkAsync(Message receivedMessage, string link)
         {
-            var inputFileName = Path.ChangeExtension(Path.GetTempFileName(), ".webm");
+            var inputFileName = Path.Combine(Directory.GetCurrentDirectory(), $"{Guid.NewGuid()}.webm");
 
             var sentMessage = await _bot.SendTextMessageAsync(
                 new ChatId(receivedMessage.Chat.Id),
@@ -150,7 +150,7 @@ namespace Bot.Services
 
         private async Task HandleDocumentAsync(Message receivedMessage)
         {
-            var inputFileName = Path.ChangeExtension(Path.GetTempFileName(), ".webm");
+            var inputFileName = Path.Combine(Directory.GetCurrentDirectory(), $"{Guid.NewGuid()}.webm");
 
             var sentMessage = await _bot.SendTextMessageAsync(
                 new ChatId(receivedMessage.Chat.Id), 
@@ -197,7 +197,7 @@ namespace Bot.Services
 
             var audioStream = mediaInfo.AudioStreams.FirstOrDefault()?.SetCodec(AudioCodec.aac);
 
-            var outputFilePath = Path.ChangeExtension(Path.GetTempFileName(), ".mp4");
+            var outputFilePath = Path.Combine(Directory.GetCurrentDirectory(), $"{Guid.NewGuid()}.mp4");
             
             try
             {
@@ -223,7 +223,7 @@ namespace Bot.Services
                 sentMessage.MessageId,
                 $"{link}\nGenerating thumbnail 🖼️");
 
-            var thumbnailFilePath = Path.ChangeExtension(Path.GetTempFileName(), ".jpg");
+            var thumbnailFilePath = Path.Combine(Directory.GetCurrentDirectory(), $"{Guid.NewGuid()}.jpg");
             var thumbnailConversion = await FFmpeg.Conversions.FromSnippet.Snapshot(inputFilePath, thumbnailFilePath, TimeSpan.Zero);
 
             try

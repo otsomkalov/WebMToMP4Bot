@@ -7,7 +7,7 @@ using Telegram.Bot.Types.Enums;
 namespace Bot.Controllers
 {
     [ApiController]
-    [Route("api/update")]
+    [Route("update")]
     public class UpdateController : ControllerBase
     {
         private readonly IMessageService _messageService;
